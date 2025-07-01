@@ -1,0 +1,35 @@
+# 包含额外的文件到分发包中
+
+# 文档文件
+include README.md
+include LICENSE
+
+# 配置文件
+include setup.py
+
+# 包数据和二进制文件
+recursive-include visqol_rs_py *.py
+recursive-include visqol_rs_py *.txt
+recursive-include visqol_rs_py *.json
+recursive-include visqol_rs_py/bin *
+recursive-include visqol_rs_py/model *
+
+# 保留visqol-rs用于开发/测试兼容性
+recursive-include visqol_rs_py/visqol-rs *
+
+# 排除不需要的文件
+global-exclude *.pyc
+global-exclude *.pyo
+global-exclude *.pyd
+global-exclude __pycache__
+global-exclude .git*
+global-exclude .DS_Store
+
+# 排除测试文件
+exclude tests/*
+recursive-exclude tests *.py
+
+# 排除构建文件
+exclude build/*
+exclude dist/*
+exclude *.egg-info/*
