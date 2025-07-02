@@ -10,6 +10,8 @@ import re
 import json
 import time
 import logging
+import tempfile
+import wave
 from pathlib import Path
 from typing import List, Dict, Tuple, Optional, Union
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -81,6 +83,151 @@ class ViSQOLCalculator:
         
         return None
     
+    def _validate_and_convert_audio(self, audio_file: str) -> str:
+        """验证并转换音频文件格式，确保ViSQOL可以处理
+        
+        Args:
+            audio_file: 音频文件路径
+            
+        Returns:
+            处理后的音频文件路径（可能是临时文件）
+            
+        Raises:
+            ValueError: 如果音频文件无效或转换失败
+        """
+        try:
+            # 首先检查是否是WAV文件
+            if not audio_file.lower().endswith('.wav'):
+                raise ValueError(f"仅支持WAV格式文件，当前文件: {audio_file}")
+            
+            # 检查WAV文件格式
+            with wave.open(audio_file, 'rb') as wav_file:
+                sample_rate = wav_file.getframerate()
+                bits_per_sample = wav_file.getsampwidth() * 8
+                channels = wav_file.getnchannels()
+                
+                self.logger.debug(f"音频文件信息: {audio_file}")
+                self.logger.debug(f"  采样率: {sample_rate} Hz")
+                self.logger.debug(f"  位深: {bits_per_sample} bits")
+                self.logger.debug(f"  声道: {channels}")
+                
+                # ViSQOL支持的格式检查
+                supported_sample_rates = [8000, 16000, 22050, 44100, 48000]
+                supported_bits = [16]  # ViSQOL主要支持16位
+                
+                needs_conversion = False
+                conversion_reason = []
+                
+                if sample_rate not in supported_sample_rates:
+                    needs_conversion = True
+                    conversion_reason.append(f"采样率 {sample_rate} Hz")
+                
+                if bits_per_sample not in supported_bits:
+                    needs_conversion = True
+                    conversion_reason.append(f"位深 {bits_per_sample} bits")
+                
+                if channels != 1:
+                    needs_conversion = True
+                    conversion_reason.append(f"声道数 {channels}")
+                
+                # 如果不需要转换，直接返回原文件
+                if not needs_conversion:
+                    return audio_file
+                
+                # 需要转换，记录日志
+                self.logger.info(f"需要转换音频格式: {', '.join(conversion_reason)}")
+                self.logger.info(f"目标格式: 48000 Hz, 16 bits, 单声道")
+                
+                # 转换音频文件
+                return self._convert_audio_format(audio_file, wav_file)
+                
+        except wave.Error as e:
+            raise ValueError(f"无效的WAV文件: {audio_file}, 错误: {e}")
+        except Exception as e:
+            raise ValueError(f"音频文件处理失败: {audio_file}, 错误: {e}")
+    
+    def _convert_audio_format(self, audio_file: str, source_wav) -> str:
+        """转换音频文件格式为ViSQOL支持的格式
+        
+        Args:
+            audio_file: 原始音频文件路径
+            source_wav: 已打开的wave文件对象
+            
+        Returns:
+            转换后的临时文件路径
+        """
+        # 读取原始音频数据
+        frames = source_wav.readframes(source_wav.getnframes())
+        original_sample_rate = source_wav.getframerate()
+        original_channels = source_wav.getnchannels()
+        original_sampwidth = source_wav.getsampwidth()
+        
+        # 创建临时文件
+        temp_fd, temp_path = tempfile.mkstemp(suffix='.wav', prefix='visqol_converted_')
+        os.close(temp_fd)  # 关闭文件描述符，让wave模块使用
+        
+        try:
+            # 目标格式
+            target_sample_rate = 48000
+            target_channels = 1
+            target_sampwidth = 2  # 16位
+            
+            # 简单的格式转换（基础实现）
+            import numpy as np
+            
+            # 将音频数据转换为numpy数组
+            if original_sampwidth == 1:
+                audio_data = np.frombuffer(frames, dtype=np.uint8)
+                audio_data = (audio_data.astype(np.float32) - 128) / 128.0
+            elif original_sampwidth == 2:
+                audio_data = np.frombuffer(frames, dtype=np.int16)
+                audio_data = audio_data.astype(np.float32) / 32767.0
+            elif original_sampwidth == 3:
+                # 24位音频处理
+                audio_bytes = np.frombuffer(frames, dtype=np.uint8)
+                audio_data = []
+                for i in range(0, len(audio_bytes), 3):
+                    sample = int.from_bytes(audio_bytes[i:i+3], byteorder='little', signed=True)
+                    audio_data.append(sample)
+                audio_data = np.array(audio_data, dtype=np.float32) / 8388607.0
+            elif original_sampwidth == 4:
+                audio_data = np.frombuffer(frames, dtype=np.int32)
+                audio_data = audio_data.astype(np.float32) / 2147483647.0
+            else:
+                raise ValueError(f"不支持的音频位深: {original_sampwidth * 8} bits")
+            
+            # 处理多声道转单声道
+            if original_channels > 1:
+                audio_data = audio_data.reshape(-1, original_channels)
+                audio_data = np.mean(audio_data, axis=1)  # 取平均值转为单声道
+            
+            # 重采样（简单的线性插值）
+            if original_sample_rate != target_sample_rate:
+                duration = len(audio_data) / original_sample_rate
+                target_length = int(duration * target_sample_rate)
+                indices = np.linspace(0, len(audio_data) - 1, target_length)
+                audio_data = np.interp(indices, np.arange(len(audio_data)), audio_data)
+            
+            # 转换为16位整数
+            audio_data = np.clip(audio_data, -1.0, 1.0)
+            audio_data = (audio_data * 32767).astype(np.int16)
+            
+            # 写入转换后的文件
+            with wave.open(temp_path, 'wb') as temp_wav:
+                temp_wav.setnchannels(target_channels)
+                temp_wav.setsampwidth(target_sampwidth)
+                temp_wav.setframerate(target_sample_rate)
+                temp_wav.writeframes(audio_data.tobytes())
+            
+            self.logger.info(f"音频转换完成: {audio_file} -> {temp_path}")
+            return temp_path
+            
+        except Exception as e:
+            # 清理临时文件
+            if os.path.exists(temp_path):
+                os.unlink(temp_path)
+            raise ValueError(f"音频格式转换失败: {e}")
+    
     def calculate_single(self, reference_file: str, degraded_file: str) -> Dict:
         """计算单对音频文件的ViSQOL指标
         
@@ -92,13 +239,24 @@ class ViSQOLCalculator:
             包含ViSQOL计算结果的字典
         """
         start_time = time.time()
+        converted_ref = None
+        converted_deg = None
         
         try:
+            # 预处理音频文件，确保格式兼容
+            self.logger.debug(f"预处理参考文件: {reference_file}")
+            processed_ref = self._validate_and_convert_audio(reference_file)
+            converted_ref = processed_ref if processed_ref != reference_file else None
+            
+            self.logger.debug(f"预处理降质文件: {degraded_file}")
+            processed_deg = self._validate_and_convert_audio(degraded_file)
+            converted_deg = processed_deg if processed_deg != degraded_file else None
+            
             # 构建命令
             cmd = [
                 self.visqol_executable,
-                "--reference_file", str(reference_file),
-                "--degraded_file", str(degraded_file),
+                "--reference_file", str(processed_ref),
+                "--degraded_file", str(processed_deg),
                 "--similarity_to_quality_model", self.model_file,
                 "--verbose"
             ]
@@ -169,6 +327,21 @@ class ViSQOLCalculator:
                 "error": error_msg,
                 "processing_time": time.time() - start_time
             }
+        finally:
+            # 清理临时文件
+            if converted_ref and os.path.exists(converted_ref):
+                try:
+                    os.unlink(converted_ref)
+                    self.logger.debug(f"已清理临时参考文件: {converted_ref}")
+                except Exception as e:
+                    self.logger.warning(f"清理临时参考文件失败: {e}")
+            
+            if converted_deg and os.path.exists(converted_deg):
+                try:
+                    os.unlink(converted_deg)
+                    self.logger.debug(f"已清理临时降质文件: {converted_deg}")
+                except Exception as e:
+                    self.logger.warning(f"清理临时降质文件失败: {e}")
     
     def _parse_mos_lqo(self, output: str) -> Optional[float]:
         """从ViSQOL输出中解析MOS-LQO分数"""

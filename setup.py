@@ -74,9 +74,9 @@ class PostDevelopCommand(develop):
         develop.run(self)
         print("开发模式安装完成。")
 
-# 依赖包列表 - 只使用Python标准库
+# 依赖包列表
 INSTALL_REQUIRES = [
-    # 只使用Python标准库，无额外依赖
+    "numpy>=1.19.0",  # 用于音频格式转换
 ]
 
 # 可选依赖
