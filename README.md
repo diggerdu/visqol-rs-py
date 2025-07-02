@@ -11,6 +11,7 @@
 - 🔧 **Battery-included**: 包含预编译的visqol-rs二进制文件，一键安装即用
 - 💻 **命令行友好**: 提供完整的CLI工具和简化版交互界面
 - 📝 **丰富输出格式**: 支持JSON格式结果输出和详细日志
+- 🎯 **Numpy数组支持**: 直接处理1D numpy数组，无需保存临时文件，大幅减少I/O开销
 
 ## 安装
 
@@ -59,6 +60,8 @@ visqol-batch --help
 
 ### Python API使用
 
+#### 文件批量处理
+
 ```python
 from visqol_rs_py import ViSQOLCalculator
 
@@ -76,6 +79,51 @@ results = calculator.calculate_batch(
 stats = results["statistics"]
 print(f"成功处理: {stats['successful']}/{stats['total_files']} 文件")
 print(f"平均MOS-LQO: {stats['mos_lqo_mean']:.3f}")
+```
+
+#### Numpy数组直接处理（推荐）
+
+**新功能**: 直接使用1D numpy数组进行ViSQOL计算，无需保存为WAV文件，大幅减少I/O开销。
+
+```python
+import numpy as np
+from visqol_rs_py import ViSQOLCalculator
+
+# 创建计算器
+calculator = ViSQOLCalculator(max_workers=4)
+
+# 准备音频数据（1D numpy数组，值范围[-1.0, 1.0]）
+sample_rate = 48000
+duration = 3.0  # 3秒
+t = np.linspace(0, duration, int(sample_rate * duration))
+
+# 参考音频（纯正弦波）
+reference_audio = 0.5 * np.sin(2 * np.pi * 440 * t)
+
+# 降质音频（加噪声）
+degraded_audio = reference_audio + 0.1 * np.random.randn(len(reference_audio))
+
+# 单个音频对计算
+result = calculator.calculate_single_numpy(
+    reference_array=reference_audio,
+    degraded_array=degraded_audio,
+    sample_rate=sample_rate
+)
+
+print(f"MOS-LQO分数: {result['mos_lqo']:.3f}")
+print(f"处理时间: {result['processing_time']:.2f}秒")
+
+# 批量numpy数组计算
+reference_arrays = [reference_audio, reference_audio * 0.8]
+degraded_arrays = [degraded_audio, degraded_audio * 0.8]
+
+batch_results = calculator.calculate_batch_numpy(
+    reference_arrays=reference_arrays,
+    degraded_arrays=degraded_arrays,
+    sample_rate=sample_rate
+)
+
+print(f"批量处理完成，平均MOS-LQO: {batch_results['statistics']['mos_lqo_mean']:.3f}")
 ```
 
 ### 简化版交互界面
@@ -258,6 +306,12 @@ visqol-batch ./ref ./deg --verbose
 - [ViSQOL](https://github.com/google/visqol) - Google的原始ViSQOL实现
 
 ## 更新日志
+
+### v1.1.0
+- **新增**: Numpy数组直接处理API
+- **新增**: `calculate_single_numpy()` 和 `calculate_batch_numpy()` 方法
+- **优化**: 减少临时文件I/O开销
+- **改进**: 音频格式自动转换支持32位音频
 
 ### v1.0.0
 - 初始版本发布

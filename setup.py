@@ -14,7 +14,7 @@ from setuptools.command.develop import develop
 
 # 包信息
 PACKAGE_NAME = "visqol-rs-py"
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 DESCRIPTION = "Battery-included ViSQOL audio quality batch calculator with pre-compiled binaries"
 AUTHOR = "Xingjian Du"
 AUTHOR_EMAIL = "xingjian.du97@gmail.com"

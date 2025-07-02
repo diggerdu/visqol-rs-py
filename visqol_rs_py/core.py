@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import List, Dict, Tuple, Optional, Union
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import subprocess
+import numpy as np
 
 from .utils import get_visqol_executable_path, setup_logging
 
@@ -173,7 +174,6 @@ class ViSQOLCalculator:
             target_sampwidth = 2  # 16位
             
             # 简单的格式转换（基础实现）
-            import numpy as np
             
             # 将音频数据转换为numpy数组
             if original_sampwidth == 1:
@@ -554,3 +554,236 @@ class ViSQOLCalculator:
             self.logger.info(f"MOS-LQO标准差: {stats['mos_lqo_std']:.3f}")
         
         self.logger.info("=" * 50)
+    
+    def _numpy_array_to_wav(self, audio_data: np.ndarray, sample_rate: int = 48000) -> str:
+        """将numpy数组转换为临时WAV文件
+        
+        Args:
+            audio_data: 1D numpy音频数组，值范围应在[-1.0, 1.0]
+            sample_rate: 采样率，默认48000Hz
+            
+        Returns:
+            临时WAV文件路径
+            
+        Raises:
+            ValueError: 如果音频数据格式无效
+        """
+        # 验证输入
+        if not isinstance(audio_data, np.ndarray):
+            raise ValueError("audio_data必须是numpy数组")
+        
+        if audio_data.ndim != 1:
+            raise ValueError("audio_data必须是1D数组")
+        
+        if len(audio_data) == 0:
+            raise ValueError("audio_data不能为空")
+        
+        # 检查数据范围
+        if np.max(np.abs(audio_data)) > 1.0:
+            self.logger.warning("音频数据超出[-1.0, 1.0]范围，将进行归一化")
+            max_val = np.max(np.abs(audio_data))
+            audio_data = audio_data / max_val
+        
+        # 创建临时文件
+        temp_fd, temp_path = tempfile.mkstemp(suffix='.wav', prefix='visqol_numpy_')
+        os.close(temp_fd)
+        
+        try:
+            # 转换为16位整数
+            audio_data_int16 = np.clip(audio_data, -1.0, 1.0)
+            audio_data_int16 = (audio_data_int16 * 32767).astype(np.int16)
+            
+            # 写入WAV文件
+            with wave.open(temp_path, 'wb') as wav_file:
+                wav_file.setnchannels(1)  # 单声道
+                wav_file.setsampwidth(2)  # 16位
+                wav_file.setframerate(sample_rate)
+                wav_file.writeframes(audio_data_int16.tobytes())
+            
+            self.logger.debug(f"Numpy数组转换为WAV文件: {temp_path}")
+            self.logger.debug(f"  数组长度: {len(audio_data)}")
+            self.logger.debug(f"  采样率: {sample_rate} Hz")
+            self.logger.debug(f"  时长: {len(audio_data) / sample_rate:.2f}秒")
+            
+            return temp_path
+            
+        except Exception as e:
+            # 清理临时文件
+            if os.path.exists(temp_path):
+                os.unlink(temp_path)
+            raise ValueError(f"Numpy数组转WAV失败: {e}")
+    
+    def calculate_single_numpy(self, 
+                              reference_array: np.ndarray, 
+                              degraded_array: np.ndarray,
+                              sample_rate: int = 48000) -> Dict:
+        """使用numpy数组计算单对音频的ViSQOL指标
+        
+        Args:
+            reference_array: 参考音频的1D numpy数组，值范围[-1.0, 1.0]
+            degraded_array: 降质音频的1D numpy数组，值范围[-1.0, 1.0]
+            sample_rate: 采样率，默认48000Hz
+            
+        Returns:
+            包含ViSQOL计算结果的字典
+        """
+        start_time = time.time()
+        ref_temp_file = None
+        deg_temp_file = None
+        
+        try:
+            # 转换numpy数组为临时WAV文件
+            self.logger.debug("将参考音频numpy数组转换为WAV文件")
+            ref_temp_file = self._numpy_array_to_wav(reference_array, sample_rate)
+            
+            self.logger.debug("将降质音频numpy数组转换为WAV文件")
+            deg_temp_file = self._numpy_array_to_wav(degraded_array, sample_rate)
+            
+            # 构建命令
+            cmd = [
+                self.visqol_executable,
+                "--reference_file", ref_temp_file,
+                "--degraded_file", deg_temp_file,
+                "--similarity_to_quality_model", self.model_file,
+                "--verbose"
+            ]
+            
+            # 执行命令
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=60
+            )
+            
+            if result.returncode != 0:
+                error_msg = f"ViSQOL执行失败: {result.stderr}"
+                self.logger.error(error_msg)
+                return {
+                    "reference_array_shape": reference_array.shape,
+                    "degraded_array_shape": degraded_array.shape,
+                    "sample_rate": sample_rate,
+                    "success": False,
+                    "error": error_msg,
+                    "processing_time": time.time() - start_time
+                }
+            
+            # 解析输出
+            mos_lqo = self._parse_mos_lqo(result.stdout)
+            
+            if mos_lqo is None:
+                error_msg = "无法从输出中解析MOS-LQO分数"
+                self.logger.error(f"{error_msg}: {result.stdout}")
+                return {
+                    "reference_array_shape": reference_array.shape,
+                    "degraded_array_shape": degraded_array.shape,
+                    "sample_rate": sample_rate,
+                    "success": False,
+                    "error": error_msg,
+                    "processing_time": time.time() - start_time
+                }
+            
+            processing_time = time.time() - start_time
+            
+            result_dict = {
+                "reference_array_shape": reference_array.shape,
+                "degraded_array_shape": degraded_array.shape,
+                "sample_rate": sample_rate,
+                "success": True,
+                "mos_lqo": mos_lqo,
+                "processing_time": processing_time
+            }
+            
+            self.logger.info(f"成功计算numpy数组: {reference_array.shape} -> {mos_lqo:.3f} ({processing_time:.2f}s)")
+            return result_dict
+            
+        except Exception as e:
+            error_msg = f"Numpy数组计算过程中发生错误: {str(e)}"
+            self.logger.error(error_msg)
+            return {
+                "reference_array_shape": reference_array.shape if isinstance(reference_array, np.ndarray) else "invalid",
+                "degraded_array_shape": degraded_array.shape if isinstance(degraded_array, np.ndarray) else "invalid",
+                "sample_rate": sample_rate,
+                "success": False,
+                "error": error_msg,
+                "processing_time": time.time() - start_time
+            }
+        finally:
+            # 清理临时文件
+            if ref_temp_file and os.path.exists(ref_temp_file):
+                try:
+                    os.unlink(ref_temp_file)
+                    self.logger.debug(f"已清理临时参考文件: {ref_temp_file}")
+                except Exception as e:
+                    self.logger.warning(f"清理临时参考文件失败: {e}")
+            
+            if deg_temp_file and os.path.exists(deg_temp_file):
+                try:
+                    os.unlink(deg_temp_file)
+                    self.logger.debug(f"已清理临时降质文件: {deg_temp_file}")
+                except Exception as e:
+                    self.logger.warning(f"清理临时降质文件失败: {e}")
+    
+    def calculate_batch_numpy(self, 
+                             reference_arrays: List[np.ndarray], 
+                             degraded_arrays: List[np.ndarray],
+                             sample_rate: int = 48000) -> Dict:
+        """批量计算numpy数组的ViSQOL指标
+        
+        Args:
+            reference_arrays: 参考音频numpy数组列表
+            degraded_arrays: 降质音频numpy数组列表
+            sample_rate: 采样率，默认48000Hz
+            
+        Returns:
+            包含所有计算结果和统计信息的字典
+        """
+        start_time = time.time()
+        
+        # 验证输入
+        if len(reference_arrays) != len(degraded_arrays):
+            raise ValueError("参考数组和降质数组的数量必须相同")
+        
+        if not reference_arrays:
+            raise ValueError("数组列表不能为空")
+        
+        self.logger.info(f"开始并行计算 {len(reference_arrays)} 对numpy数组...")
+        results = []
+        
+        with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+            # 提交所有任务
+            future_to_index = {
+                executor.submit(self.calculate_single_numpy, ref_arr, deg_arr, sample_rate): i
+                for i, (ref_arr, deg_arr) in enumerate(zip(reference_arrays, degraded_arrays))
+            }
+            
+            # 收集结果
+            for future in as_completed(future_to_index):
+                result = future.result()
+                result["array_index"] = future_to_index[future]  # 添加数组索引
+                results.append(result)
+        
+        # 按索引排序结果
+        results.sort(key=lambda x: x["array_index"])
+        
+        # 计算统计信息
+        total_time = time.time() - start_time
+        stats = self._calculate_statistics(results, total_time)
+        
+        # 准备最终结果
+        final_result = {
+            "results": results,
+            "statistics": stats,
+            "metadata": {
+                "total_arrays": len(reference_arrays),
+                "sample_rate": sample_rate,
+                "max_workers": self.max_workers,
+                "visqol_executable": self.visqol_executable,
+                "model_file": self.model_file
+            }
+        }
+        
+        # 打印摘要
+        self._print_summary(stats)
+        
+        return final_result
