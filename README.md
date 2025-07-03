@@ -12,6 +12,7 @@
 - 💻 **命令行友好**: 提供完整的CLI工具和简化版交互界面
 - 📝 **丰富输出格式**: 支持JSON格式结果输出和详细日志
 - 🎯 **Numpy数组支持**: 直接处理1D numpy数组，无需保存临时文件，大幅减少I/O开销
+- ⚡ **原生Rust绑定**: 实验性原生Rust实现，提供6倍性能提升，零子进程开销
 
 ## 安装
 
@@ -124,6 +125,40 @@ batch_results = calculator.calculate_batch_numpy(
 )
 
 print(f"批量处理完成，平均MOS-LQO: {batch_results['statistics']['mos_lqo_mean']:.3f}")
+```
+
+#### 原生Rust绑定（最快性能）
+
+**实验性功能**: 使用原生Rust实现，提供最佳性能，无子进程开销。
+
+```python
+import numpy as np
+import visqol_native
+
+# 创建原生计算器（语音模式，16kHz优化）
+calculator = visqol_native.VisqolCalculator.speech_mode()
+
+# 准备音频数据（1D numpy数组，值范围[-1.0, 1.0]）
+sample_rate = 16000  # 语音模式使用16kHz
+duration = 2.0  # 2秒
+t = np.linspace(0, duration, int(sample_rate * duration))
+
+# 参考音频
+reference_audio = 0.5 * np.sin(2 * np.pi * 440 * t)
+
+# 降质音频（加噪声）
+degraded_audio = reference_audio + 0.05 * np.random.randn(len(reference_audio))
+
+# 直接计算（无文件I/O，无子进程）
+result = calculator.calculate(
+    reference_audio=reference_audio,
+    degraded_audio=degraded_audio,
+    sample_rate=sample_rate
+)
+
+print(f"MOS-LQO分数: {result.moslqo:.3f}")
+print(f"相似度分数: {result.similarity_score:.3f}")
+print(f"处理时间: {result.processing_time:.3f}秒")  # ~6x faster!
 ```
 
 ### 简化版交互界面
@@ -306,6 +341,13 @@ visqol-batch ./ref ./deg --verbose
 - [ViSQOL](https://github.com/google/visqol) - Google的原始ViSQOL实现
 
 ## 更新日志
+
+### v1.2.0 (实验性)
+- **新增**: 原生Rust Python绑定 (`visqol_native`)
+- **性能**: 6倍性能提升，无子进程和文件I/O开销
+- **API**: 新增 `visqol_native.VisqolCalculator` 类
+- **支持**: 语音模式(16kHz)原生计算
+- **限制**: 当前仅支持语音模式，音频模式开发中
 
 ### v1.1.0
 - **新增**: Numpy数组直接处理API

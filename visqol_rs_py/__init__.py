@@ -20,7 +20,7 @@ Battery-included with pre-compiled binaries for easy installation.
     )
 """
 
-__version__ = "1.1.0"
+__version__ = "1.2.0"
 __author__ = "Xingjian Du"
 __email__ = "xingjian.du97@gmail.com"
 __license__ = "MIT"

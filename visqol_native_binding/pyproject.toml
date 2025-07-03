@@ -1,0 +1,26 @@
+[build-system]
+requires = ["maturin>=1.0,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "visqol-native"
+version = "0.1.0"
+description = "Native Rust Python bindings for ViSQOL audio quality assessment"
+authors = [
+    {name = "Xingjian Du", email = "xingjian.du97@gmail.com"}
+]
+license = {text = "MIT"}
+readme = "README.md"
+requires-python = ">=3.8"
+dependencies = [
+    "numpy>=1.19.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=6.0",
+    "maturin>=1.0",
+]
+
+[tool.maturin]
+module-name = "visqol_native"

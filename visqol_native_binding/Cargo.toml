@@ -1,0 +1,23 @@
+[package]
+name = "visqol-native-binding"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "visqol_native"
+crate-type = ["cdylib"]
+
+[dependencies]
+pyo3 = { version = "0.25", features = ["extension-module"] }
+numpy = "0.25"
+ndarray = "0.15"
+tempfile = "3.0"
+hound = "3.5"
+
+# Clone the visqol-rs dependency locally or use git
+[dependencies.visqol-rs]
+git = "https://github.com/dstrub18/visqol-rs.git"
+default-features = false
+
+[build-dependencies]
+pyo3-build-config = "0.25"
